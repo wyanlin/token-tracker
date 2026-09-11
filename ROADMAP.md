@@ -5,6 +5,10 @@
 
 ## 当前阶段
 
+**2026-09-11 OpenCode TUI 状态栏迭代中（未发版）**：新增 opencode 适配器（读 `~/.local/share/opencode/opencode.db` 的 `session` / `message` 表，逐请求 usage 拆 pricing_segments，reasoning 并入 output，WAL 只读连接）、`--opencode` flag 进 registry 后 status/daily/weekly/monthly/sessions 均可按 agent 看。TUI 状态栏 = **官方 TUI 插件**（`@opencode-ai/plugin/tui` 的 `sidebar_content` slot）：插件文件 `~/.config/opencode/plugins/tt-statusline.tsx` + **`~/.config/opencode/tui.json` 的 plugin 数组声明**（关键坑：插件目录只自动扫 `{ts,js}`，`.tsx` 必须显式声明进 tui.json，否则不加载）。数据来自 `api.state.session.messages(sessionID)` + OpenCode Go 官方 `_server` RPC（`5h/1w/1m` 真实使用率，Claude Code 风格，需 `~/.config/token-tracker/opencode-go.json` 的 workspace_id + auth cookie，cookie 仅存本机不入库）。对比 Codex 的「追加文本」方案这里**不能向会话注入**（读源码确认 `toModelMessagesEffect` 只按 `ignored` 挡 user 文本，`synthetic` 不拦，注入会污染模型上下文）。`SETUP_VERSION` 5→6；`OPENCODE_STATUSLINE_HOOK_VERSION` 已到 1.3（1.3 移除误伤的本地相对窗口条，仅保留会话统计 + Go 官方额度）。新增 7 个 opencode 适配器单测 + 8 个 hooks 安装/卸载/版本/配置合并测试；ruff/mypy 干净。Windows 本机遗留：test_sidebar.py 整文件卡死、`test_all_path_constants_are_isolated`/数个 statusline 子进程用例因 tmp 落在 real home 下挂，均为 HEAD 既有环境问题（Linux CI 正常），非本次引入。
+
+## 历史进度（近期）
+
 **2026-09-10 00:09 GPT 模型命名空间识别已修复（未发版）**：`chatgpt/gpt-5.6-sol` 原先无法匹配已有定价并按 $0 计；现支持 `chatgpt/gpt-*`、`openai/gpt-*` 缺少独立报价时复用裸模型解析，日期后缀和长上下文阶梯价保持一致。完整 ID 及其变体报价优先，完整 ID 精确价也优先于已缓存的裸模型兜底；未知第三方、嵌套前缀和非 GPT 模型不剥除。完整与英文 dumb terminal pytest 各 **416 passed**，Ruff、mypy 和 diff 检查通过。
 
 **2026-09-09 19:55 `0.5.7` 已发布 PyPI（源码与 tag 已 push）**：包含 Astra / Fable 5.1 定价、Codex 缓存写入计价、此前模型价格校准与扫描性能优化。发布 commit `30a7892`、annotated tag `v0.5.7` 已推送；完整 pytest 与英文 dumb terminal 各 **395 passed**，Ruff、mypy（41 个源文件）、锁文件和 diff 检查通过。从提交快照构建 sdist / wheel，Twine check 通过，wheel 的 44 个包文件与提交逐项一致。PyPI 元数据和实际下载产物的 SHA-256 均与本地一致（wheel `3f4b6d14…3d4a`、sdist `09294a28…452a`）；官方索引无缓存隔离安装后 `tt --version` 正确输出 0.5.7。用户级工具仍为旧安装，未自动升级；原有规范迁移改动和品牌素材保持未提交。

@@ -32,9 +32,10 @@ SCHEMA_VERSION = 1
 # 3：安装随包分发的用户级 Codex $tt-sidebar Skill + UserPromptSubmit hook。
 # 4：安装 Kimi Code 的 tt-sidebar Skill（$KIMI_CODE_HOME/skills）+ config.toml 的 UserPromptSubmit hook。
 # 5：安装 Kimi Code statusline（tui.toml 的 [status_line].command + kimi-statusline.py 脚本）。
+# 6：安装 OpenCode TUI 状态栏（~/.config/opencode/plugins/tt-statusline.tsx，TUI 侧边栏 slot）。
 # 注：CC statusLine 变可选组件（issue #16/#17）时决定**不 bump**——小众需求不打断存量用户，
 # 存量 tt 用户 intent 缺失时由 is_setup 按「statusLine 已是 tt 的」推断为已配，想改的手动 tt setup。
-SETUP_VERSION = 5
+SETUP_VERSION = 6
 
 # 旧位置（独立 theme.json / lang.json），老用户首次读 config.json 不存在时自动合并迁移
 _LEGACY_THEME_PATH = os.path.join(CONFIG_DIR, "theme.json")
@@ -203,3 +204,17 @@ def setup_version() -> int:
     """读已落地的 setup_version；老用户 / 字段缺失 / 非 int → 0（触发重新引导）。"""
     val = load_config().get("setup_version")
     return val if isinstance(val, int) else 0
+
+
+# --- opencode statusline 意图（TUI 侧边栏面板组件，镜像 codex_faux_statusline 机制） ---
+
+
+def save_opencode_statusline(enabled: bool) -> None:
+    """wizard 选完后写入意图。"""
+    _save_field("opencode_statusline", bool(enabled))
+
+
+def opencode_statusline_intent() -> bool | None:
+    """读用户对 OpenCode 状态栏的意图。严格 bool；非 bool / 缺字段 → None（视为没表达）。"""
+    val = load_config().get("opencode_statusline")
+    return val if isinstance(val, bool) else None

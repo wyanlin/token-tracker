@@ -1,6 +1,6 @@
 # Token Tracker
 
-Track token usage across local AI agents. Supports **Claude Code**, **Codex**, and **Kimi Code**.
+Track token usage across local AI agents. Supports **Claude Code**, **Codex**, **Kimi Code**, and **OpenCode**.
 
 Custom StatusLine integration + CLI Dashboard — see token usage, cost, and rate limits at a glance.
 
@@ -12,8 +12,8 @@ Custom StatusLine integration + CLI Dashboard — see token usage, cost, and rat
 
 ## Highlights
 
-- **Unified multi-agent tracking** — Claude Code + Codex + Kimi Code in one place, grouped by source
-- **Status line integration** — Claude Code via official StatusLine API; **Codex industry-first faux statusline** (hook-injected two-line truecolor status — bringing an official-unsupported capability to Codex); Kimi Code via the official `status_line` API
+- **Unified multi-agent tracking** — Claude Code + Codex + Kimi Code + OpenCode in one place, grouped by source
+- **Status line integration** — Claude Code via official StatusLine API; **Codex industry-first faux statusline** (hook-injected two-line truecolor status — bringing an official-unsupported capability to Codex); Kimi Code via the official `status_line` API; **OpenCode via a TUI sidebar plugin** showing the current session's live usage
 - **Live sidebar** — `tt sidebar` shows all active sessions (Claude Code + Codex + Kimi Code); `$tt-sidebar` in Codex or `/skill:tt-sidebar` in Kimi Code opens a current-session-only pane on the right at one-third width
 - **Rate limit monitoring** — real-time 5h / 7d quota usage with reset countdown
 - **Multi-dimensional cost analysis** — per-session, daily, weekly, monthly cost breakdown
@@ -25,7 +25,7 @@ Custom StatusLine integration + CLI Dashboard — see token usage, cost, and rat
 
 ## StatusLine
 
-`tt setup` auto-configures status lines for Claude Code, Codex, and Kimi Code, auto-upgraded when the script updates.
+`tt setup` auto-configures status lines for Claude Code, Codex, Kimi Code, and OpenCode, auto-upgraded when the scripts update.
 
 ### Claude Code (official API)
 
@@ -79,6 +79,35 @@ Built on Kimi Code's official `status_line` API (`tui.toml`) — a single trueco
 - Project / branch / model / permission mode come from Kimi's official snapshot (the snapshot has no thinking-effort field — effort is read from the actual `thinkingEffort` of requests in the session wire); the branch segment's uncommitted +/− line counts and untracked files are computed via `git diff --numstat` + `git ls-files` (same as the CC status line); Total and Cost are accumulated **incrementally** from the session's `wire.jsonl` by the status-line script (offset-cached, only new bytes are read per run), priced with the built-in official Kimi rates
 - Fully supported on macOS / Linux / Windows (Windows console GBK encoding and background-process detaching are both handled)
 - An existing custom `status_line.command` is never overwritten by default (the wizard also lets you opt out); `tt unsetup` restores the exact prior state
+
+### OpenCode (TUI sidebar panel)
+
+OpenCode has no status-line interface, and token-tracker never injects into a session (injected text is re-read as model context and would pollute the prompt). Instead it uses the official TUI plugin slot API: `tt setup` installs a `tt-statusline.tsx` plugin into `~/.config/opencode/plugins/` and declares it in the `plugin` array of `~/.config/opencode/tui.json` (TUI plugins are not auto-scanned from the plugin dir; only `.ts`/`.js` are, so declaration is required). It renders a Token Tracker panel in the OpenCode session sidebar:
+
+- project name (working directory) + Git branch
+- `Total` session tokens and `Cost` equivalent cost (from OpenCode's own per-request pricing)
+- detail row: `in` / `out` (incl. reasoning) / `cache r / w`
+- `Model` and plugin version
+- **OpenCode Go plan quota**: `5h / 1w / 1m` real usage
+
+**Enable / remove**: `tt setup` installs it (the wizard asks when OpenCode is detected), `tt unsetup` removes it; a user-owned plugin file of the same name and the user's own `tui.json` plugin entries are never overwritten or deleted; a corrupt `tui.json` is never overwritten. Takes effect after restarting OpenCode. Session data comes from OpenCode's TUI state (state-driven refresh); zero extra runtime dependencies (`solid-js` / `@opentui/solid` are provided by the OpenCode plugin host).
+
+### OpenCode Go plan quota (optional, recommended)
+
+The `5h / 1w / 1m` rows at the bottom query the **official OpenCode Go (`opencode.ai` plan) `_server` RPC** for the real usage percentage and reset countdown, styled like the Claude Code status line (`█████░ 31% (1h19m)`), refreshed every 60 s; a request failure shows `?` and never breaks the rest of the panel.
+
+Configure two fields in `~/.config/token-tracker/opencode-go.json`:
+
+```json
+{ "workspace_id": "wrk_xxxx", "auth_cookie": "Fe26.2*..." }
+```
+
+How to get them:
+
+1. Sign in at <https://opencode.ai>, open your workspace/billing page — **`workspace_id`** is the `wrk_`-prefixed segment in the address bar URL (not the workspace display name)
+2. Open DevTools → Application → Cookies, select the `opencode.ai` site, copy the full value of the cookie named **`auth`** (starts with `Fe26.2*`) as **`auth_cookie`**
+
+> Security note: `auth_cookie` is a sensitive credential that lives only in the local `~/.config/token-tracker/opencode-go.json`, is never committed and never logged; do not paste the cookie or workspace_id into chats or shareable links. Delete the file to clear it — the panel then falls back to an "unconfigured" hint.
 
 ## Live Sidebar
 
@@ -140,7 +169,7 @@ tt unsetup        # uninstall and restore previous config
 tt --version      # show version (-v / -V)
 ```
 
-> In multi-agent setups, add `--claude` / `--codex` / `--kimi` (mutually exclusive) to filter any report to a single agent — works for `status` / `daily` / `weekly` / `monthly` / `sessions`. E.g. `tt daily --kimi` renders only the Kimi Code heatmap. Inside an agent session, `daily` / `weekly` already auto-follow the current agent; the explicit flag overrides that.
+> In multi-agent setups, add `--claude` / `--codex` / `--kimi` / `--opencode` (mutually exclusive) to filter any report to a single agent — works for `status` / `daily` / `weekly` / `monthly` / `sessions`. E.g. `tt daily --opencode` renders only the OpenCode heatmap. Inside an agent session, `daily` / `weekly` already auto-follow the current agent; the explicit flag overrides that.
 
 > 💡 `tt daily` is a GitHub-style token contribution heatmap (shaded green cells). In a Claude Code session, type `!tt daily` to see it in full color — commands you run yourself with `!` have their 24-bit true-color output rendered.
 
@@ -178,6 +207,7 @@ The first time you run `tt` (or run `tt setup` in a standalone terminal), an **i
 3. **Take over Claude Code status line** — Yes/No (only when Claude Code is detected; an existing custom statusLine is backed up first, and picking No leaves it untouched)
 4. **Enable Codex faux statusline** — Yes/No (only when Codex is detected)
 5. **Enable Kimi Code status line** — Yes/No (only when Kimi Code is detected; an existing custom `status_line.command` is never overwritten by default)
+6. **Enable OpenCode status line** — Yes/No (only when OpenCode is detected; a user-owned plugin file of the same name is never overwritten)
 
 CI / non-tty environments (Docker / scripts / `curl|bash`) auto-install with **recommended defaults**: language follows the system setting, theme mocha, components on by default but **an existing custom statusLine is never replaced**. To change anything later, just run `tt setup` again.
 
@@ -199,8 +229,9 @@ Available sort fields: `tokens` / `cost` / `messages` / `time` / `input` / `outp
 | Claude Code | `~/.claude/projects/*/` | JSONL (per-message usage) |
 | Codex | `~/.codex/sessions/` | JSONL + SQLite |
 | Kimi Code | `~/.kimi-code/sessions/` | wire JSONL (per-turn increments) |
+| OpenCode | `~/.local/share/opencode/opencode.db` | SQLite (`session` / `message` tables; WAL-safe parallel reads) |
 
-Cross-platform paths: on Windows `~` resolves to `%USERPROFILE%`. Honors `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `KIMI_CODE_HOME` (the official custom-directory env vars) when set.
+Cross-platform paths: on Windows `~` resolves to `%USERPROFILE%`. Honors `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `KIMI_CODE_HOME` / `XDG_DATA_HOME` (the official custom-directory env vars) when set.
 
 Token Tracker is **read-only** — it never modifies any agent data.
 

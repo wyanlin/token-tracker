@@ -44,6 +44,15 @@ def _isolate_real_home(tmp_path, monkeypatch):
     monkeypatch.setattr(
         sidebar_install, "SIDEBAR_SKILL_DIR", str(home / ".agents" / "skills" / "tt-sidebar")
     )
+    monkeypatch.setattr(hooks, "_OPENCODE_CONFIG", str(home / ".config" / "opencode"))
+    monkeypatch.setattr(
+        hooks, "OPENCODE_PLUGINS_DIR", str(home / ".config" / "opencode" / "plugins")
+    )
+    monkeypatch.setattr(
+        hooks, "OPENCODE_STATUSLINE_PLUGIN_PATH",
+        str(home / ".config" / "opencode" / "plugins" / "tt-statusline.tsx"),
+    )
+    monkeypatch.setattr(hooks, "OPENCODE_TUI_CONFIG", str(home / ".config" / "opencode" / "tui.json"))
     monkeypatch.setattr(hooks, "STATUS_FILE", str(tt / "tt-status.json"))
     monkeypatch.setattr(hooks, "TERMINAL_MAP_FILE", str(tt / "tt-terminal-map.json"))
     monkeypatch.setattr(hooks, "CC_BACKUP_PATH", str(tt / "cc-backup.json"))
@@ -1151,6 +1160,7 @@ def test_ask_components_asks_cc_then_codex(monkeypatch):
     monkeypatch.setattr(wizard, "_has_cc", lambda: True)
     monkeypatch.setattr(wizard, "_has_codex", lambda: True)
     monkeypatch.setattr(wizard, "_has_kimi", lambda: False)  # 本机装有 Kimi，固定关掉、问题数稳定
+    monkeypatch.setattr(wizard, "_has_opencode", lambda: False)  # 本机装有 OpenCode，固定关掉
     monkeypatch.setattr(wizard, "recommended_components",
                         lambda: hooks.SetupComponents(cc_statusline=False, codex_faux_statusline=True))
 
@@ -1172,6 +1182,7 @@ def test_ask_components_cc_only(monkeypatch):
     monkeypatch.setattr(wizard, "_has_cc", lambda: True)
     monkeypatch.setattr(wizard, "_has_codex", lambda: False)
     monkeypatch.setattr(wizard, "_has_kimi", lambda: False)  # 本机装有 Kimi，固定关掉、问题数稳定
+    monkeypatch.setattr(wizard, "_has_opencode", lambda: False)  # 本机装有 OpenCode，固定关掉
     monkeypatch.setattr(wizard, "recommended_components", lambda: hooks.SetupComponents())
     monkeypatch.setattr(wizard, "_ask_yes_no", lambda message, default: calls.append(message) or True)
     c = wizard.ask_components()
@@ -1649,6 +1660,7 @@ def test_ask_components_kimi_question(monkeypatch):
     monkeypatch.setattr(wizard, "_has_cc", lambda: False)
     monkeypatch.setattr(wizard, "_has_codex", lambda: False)
     monkeypatch.setattr(wizard, "_has_kimi", lambda: True)
+    monkeypatch.setattr(wizard, "_has_opencode", lambda: False)
     monkeypatch.setattr(wizard, "recommended_components",
                         lambda: hooks.SetupComponents(kimi_statusline=False))
     monkeypatch.setattr(wizard, "_ask_yes_no",
@@ -1658,3 +1670,161 @@ def test_ask_components_kimi_question(monkeypatch):
     assert asked[0][0].startswith("[1] ")
     assert c.kimi_statusline is False
     assert c.cc_statusline is True and c.codex_faux_statusline is True
+
+
+# --- OpenCode TUI 状态栏插件 ---
+
+
+def test_opencode_statusline_render_injects_version():
+    rendered = hooks._render_opencode_statusline_plugin()
+    assert rendered.startswith("/**")  # tsx 模板头
+    assert "__OPENCODE_STATUSLINE_VERSION__" not in rendered
+    assert f'TT_VERSION = "{hooks.OPENCODE_STATUSLINE_HOOK_VERSION}"' in rendered
+    assert "sidebar_content" in rendered and "Token Tracker" in rendered
+    assert "opencode-go.json" in rendered          # OpenCode Go 官方额度配置路径烘焙在模板里
+    assert "rollingUsage" in rendered and "monthlyUsage" in rendered
+
+
+def test_opencode_statusline_version_roundtrip_and_user_file(tmp_path, monkeypatch):
+    plugin = tmp_path / "tt-statusline.tsx"
+    monkeypatch.setattr(hooks, "OPENCODE_STATUSLINE_PLUGIN_PATH", str(plugin))
+    assert hooks._installed_opencode_statusline_version() is None
+    assert not hooks._opencode_statusline_is_tt()
+
+    plugins = tmp_path
+    monkeypatch.setattr(hooks, "OPENCODE_PLUGINS_DIR", str(plugins))
+    hooks._write_opencode_statusline_plugin()
+    assert hooks._installed_opencode_statusline_version() == hooks.OPENCODE_STATUSLINE_HOOK_VERSION
+    assert hooks._opencode_statusline_is_tt()
+
+    plugin.write_text("user plugin\n", encoding="utf-8")
+    assert not hooks._opencode_statusline_is_tt()
+
+
+def test_opencode_statusline_active_double_factor(tmp_path, monkeypatch):
+    plugins = tmp_path / "opencode" / "plugins"
+    plugin = plugins / "tt-statusline.tsx"
+    monkeypatch.setattr(hooks, "OPENCODE_PLUGINS_DIR", str(plugins))
+    monkeypatch.setattr(hooks, "OPENCODE_STATUSLINE_PLUGIN_PATH", str(plugin))
+    monkeypatch.setattr(hooks, "OPENCODE_TUI_CONFIG", str(tmp_path / "opencode" / "tui.json"))
+    assert not hooks.opencode_statusline_active()
+
+    config.save_opencode_statusline(True)
+    assert not hooks.opencode_statusline_active()  # 意图 True 但文件没装
+
+    hooks._write_opencode_statusline_plugin()
+    assert not hooks.opencode_statusline_active()  # 插件文件在，但 tui.json 未声明 → 不算装好
+
+    hooks._add_tt_to_tui_config()
+    assert hooks.opencode_statusline_active()
+
+    config.save_opencode_statusline(False)
+    assert not hooks.opencode_statusline_active()
+
+
+def test_needs_update_opencode_statusline_gate(tmp_path, monkeypatch):
+    plugins = tmp_path / "opencode" / "plugins"
+    monkeypatch.setattr(hooks, "_OPENCODE_CONFIG", str(tmp_path / "opencode"))
+    monkeypatch.setattr(hooks, "OPENCODE_PLUGINS_DIR", str(plugins))
+    monkeypatch.setattr(hooks, "OPENCODE_STATUSLINE_PLUGIN_PATH", str(plugins / "tt-statusline.tsx"))
+    monkeypatch.setattr(hooks, "OPENCODE_TUI_CONFIG", str(tmp_path / "opencode" / "tui.json"))
+
+    # 未表达意图 / 未引导到 opencode 版本 → 不纳入需要更新
+    config.save_setup_version()
+    assert not hooks.needs_update()
+
+    config.save_opencode_statusline(True)
+    assert not hooks.needs_update()  # 文件未装（needs_update 只在已装时看版本）
+
+    hooks._write_opencode_statusline_plugin()
+    assert hooks.needs_update()  # tui.json 未声明 → 需要补齐
+
+    hooks._add_tt_to_tui_config()
+    assert not hooks.needs_update()
+
+    # 版本落后 → 需要重烘焙
+    (plugins / "tt-statusline.tsx").write_text(
+        hooks._render_opencode_statusline_plugin().replace(
+            f'TT_VERSION = "{hooks.OPENCODE_STATUSLINE_HOOK_VERSION}"', 'TT_VERSION = "0.9"'
+        ),
+        encoding="utf-8",
+    )
+    assert hooks.needs_update()
+
+
+def test_setup_opencode_statusline_install_and_optout(tmp_path, monkeypatch):
+    plugins = tmp_path / "opencode" / "plugins"
+    monkeypatch.setattr(hooks, "OPENCODE_PLUGINS_DIR", str(plugins))
+    monkeypatch.setattr(hooks, "OPENCODE_STATUSLINE_PLUGIN_PATH", str(plugins / "tt-statusline.tsx"))
+    tui = tmp_path / "opencode" / "tui.json"
+    monkeypatch.setattr(hooks, "OPENCODE_TUI_CONFIG", str(tui))
+
+    hooks._setup_opencode_statusline(hooks.SetupComponents(opencode_statusline=True), quiet=True)
+    assert os.path.exists(plugins / "tt-statusline.tsx")
+    assert hooks._tui_config_has_tt()
+    assert config.opencode_statusline_intent() is True
+
+    hooks._setup_opencode_statusline(hooks.SetupComponents(opencode_statusline=False), quiet=True)
+    assert not os.path.exists(plugins / "tt-statusline.tsx")
+    assert not hooks._tui_config_has_tt()
+    assert config.opencode_statusline_intent() is False
+
+
+def test_opencode_tui_config_merges_user_plugins(tmp_path, monkeypatch):
+    # tui.json 里用户自己的 plugin 项保留；损坏 JSON 拒写。
+    tui = tmp_path / "opencode" / "tui.json"
+    tui.parent.mkdir(parents=True)
+    tui.write_text('{"plugin": ["opencode-wakatime", "user-plugin@latest"]}', encoding="utf-8")
+    monkeypatch.setattr(hooks, "OPENCODE_TUI_CONFIG", str(tui))
+
+    assert hooks._add_tt_to_tui_config()
+    data = json.loads(tui.read_text(encoding="utf-8"))
+    assert data["plugin"] == ["opencode-wakatime", "user-plugin@latest", hooks._opencode_plugin_uri()]
+    # 幂等
+    assert not hooks._add_tt_to_tui_config()
+
+    assert hooks._remove_tt_from_tui_config()
+    after = json.loads(tui.read_text(encoding="utf-8"))
+    assert after["plugin"] == ["opencode-wakatime", "user-plugin@latest"]
+
+    tui.write_text("{broken", encoding="utf-8")
+    with pytest.raises(ValueError):
+        hooks._add_tt_to_tui_config()  # 损坏 → 拒写
+    assert tui.read_text(encoding="utf-8") == "{broken"
+    hooks._setup_opencode_statusline(hooks.SetupComponents(opencode_statusline=False), quiet=True)
+    assert tui.read_text(encoding="utf-8") == "{broken"  # 损坏 → 卸载也不碰
+
+
+def test_setup_opencode_does_not_touch_user_file(tmp_path, monkeypatch):
+    plugins = tmp_path / "opencode" / "plugins"
+    plugin = plugins / "tt-statusline.tsx"
+    plugin.parent.mkdir(parents=True)
+    plugin.write_text("user plugin\n", encoding="utf-8")
+    monkeypatch.setattr(hooks, "OPENCODE_PLUGINS_DIR", str(plugins))
+    monkeypatch.setattr(hooks, "OPENCODE_STATUSLINE_PLUGIN_PATH", str(plugin))
+
+    hooks._setup_opencode_statusline(hooks.SetupComponents(opencode_statusline=True), quiet=True)
+    assert plugin.read_text(encoding="utf-8") == "user plugin\n"  # 同名用户文件绝不覆盖
+
+    hooks._unsetup_opencode_statusline()
+    assert plugin.exists()  # 也不删除
+
+    config.save_opencode_statusline(False)
+    assert not hooks.opencode_statusline_active()
+
+
+def test_ask_components_opencode_question(monkeypatch):
+    from token_tracker import wizard
+    asked: list = []
+    monkeypatch.setattr(wizard, "_has_cc", lambda: False)
+    monkeypatch.setattr(wizard, "_has_codex", lambda: False)
+    monkeypatch.setattr(wizard, "_has_kimi", lambda: False)
+    monkeypatch.setattr(wizard, "_has_opencode", lambda: True)
+    monkeypatch.setattr(wizard, "recommended_components",
+                        lambda: hooks.SetupComponents(opencode_statusline=False))
+    monkeypatch.setattr(wizard, "_ask_yes_no",
+                        lambda message, default: asked.append((message, default)) or default)
+    c = wizard.ask_components(step_prefix_fn=lambda i: f"[{i}] ")
+    assert [d for _, d in asked] == [False]
+    assert asked[0][0].startswith("[1] ")
+    assert c.opencode_statusline is False

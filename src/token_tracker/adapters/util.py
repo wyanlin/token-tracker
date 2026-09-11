@@ -33,6 +33,27 @@ def kimi_home() -> str:
     return os.path.expanduser("~/.kimi-code")
 
 
+def opencode_home() -> str:
+    """OpenCode 数据根目录：`XDG_DATA_HOME` 优先，否则 `~/.local/share`，再拼 `opencode`。
+
+    opencode 的 opencode.db / storage 都在这个目录；Windows 上同为 `%USERPROFILE%\\.local\\share\\opencode`。
+    """
+    env = os.environ.get("XDG_DATA_HOME", "").strip()
+    base = env if env else os.path.expanduser("~/.local/share")
+    return os.path.join(base, "opencode")
+
+
+def opencode_config_home() -> str:
+    """OpenCode 配置根目录：`OPENCODE_CONFIG_DIR` 优先，否则 `~/.config/opencode`。
+
+    全局插件目录 `plugins/` 就在这里（opencode 启动时自动加载 .ts/.tsx 插件）。
+    """
+    env = os.environ.get("OPENCODE_CONFIG_DIR", "").strip()
+    if env:
+        return env
+    return os.path.expanduser("~/.config/opencode")
+
+
 def iter_jsonl_dicts(path: Path | str) -> Iterator[dict]:
     """逐行读取 JSONL，只 yield dict 行。
 

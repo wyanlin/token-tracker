@@ -58,6 +58,8 @@ where = ["src"]
 [tool.setuptools.package-data]
 "token_tracker.skills.tt_sidebar" = ["SKILL.md", "agents/*.yaml"]
 "token_tracker.skills.tt_sidebar_kimi" = ["SKILL.md"]
+# OpenCode TUI 状态栏插件模板（.tsx）随包分发，setup 烘焙后落盘到 opencode 插件目录
+"token_tracker.templates" = ["*.tsx"]
 
 [tool.ruff]
 line-length = 120

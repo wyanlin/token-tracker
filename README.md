@@ -12,8 +12,8 @@
 
 ## 功能亮点
 
-- **多 Agent 统一追踪** — Claude Code + Codex + Kimi Code 统一读取，多 Agent 按来源分组
-- **状态栏集成** — Claude Code 用官方 StatusLine 接口；**Codex 业界首创伪 statusline 方案**（hook 注入两行真彩色状态栏，把官方未开放的能力在 Codex 里做了出来）；Kimi Code 用官方 `status_line` 接口
+- **多 Agent 统一追踪** — Claude Code + Codex + Kimi Code + OpenCode 统一读取，多 Agent 按来源分组
+- **状态栏集成** — Claude Code 用官方 StatusLine 接口；**Codex 业界首创伪 statusline 方案**（hook 注入两行真彩色状态栏，把官方未开放的能力在 Codex 里做了出来）；Kimi Code 用官方 `status_line` 接口；**OpenCode 用 TUI 侧边栏插件**面板实时显示当前会话用量
 - **实时侧边栏** — `tt sidebar` 窄窗格常驻面板：全部活跃会话一屏总览（状态灯 + 最近提示词 + 「下一步」建议），点击会话直达对应 iTerm2 / tmux 窗格
 - **当前会话自动分屏** — Codex 中显式执行 `$tt-sidebar`，在原会话右侧自动打开 1/3 宽度的独立提示词侧边栏
 - **限额监控** — 实时 5h / 7d 配额百分比 + 重置倒计时
@@ -26,7 +26,7 @@
 
 ## StatusLine 状态栏
 
-`tt setup` 自动为 Claude Code、Codex 和 Kimi Code 配置状态栏，脚本更新时自动升级。
+`tt setup` 自动为 Claude Code、Codex、Kimi Code 和 OpenCode 配置状态栏，脚本更新时自动升级。
 
 ### Claude Code（官方接口）
 
@@ -80,6 +80,35 @@ Codex 官方暂不支持自定义 StatusLine。Token Tracker 通过 hook 注入�
 - 项目 / 分支 / 模型 / 权限模式来自 Kimi 官方快照（快照无思考档位，effort 取自会话 wire 里实际请求的 `thinkingEffort`），分支段的未提交增删行 / 未跟踪数按 `git diff --numstat` + `git ls-files` 统计（同 CC 状态栏）；Total 与 Cost 由状态栏脚本按会话 `wire.jsonl` **增量**累计（offset 缓存，每秒级调用只读新增部分），成本按内置 Kimi 官方定价估算
 - macOS / Linux / Windows 全平台支持（Windows 控制台 GBK 编码、后台刷新进程 detach 方式均已适配）
 - 已有自定义 `status_line.command` 时默认不覆盖（向导里选 No 也完全不碰）；`tt unsetup` 精确还原
+
+### OpenCode（TUI 侧边栏面板）
+
+OpenCode 没有状态栏接口，**不向会话注入任何内容**（注入文本会被模型当成上下文回读、污染提示）。改为官方 TUI 插件 slot 方案：`tt setup` 会安装一个 `tt-statusline.tsx` 插件到 `~/.config/opencode/plugins/`，并在 `~/.config/opencode/tui.json` 的 `plugin` 数组声明它（插件目录不自动扫描 `.tsx`，TUI 插件必须显式声明），然后在 OpenCode 会话侧边栏渲染 Token Tracker 面板：
+
+- 项目名（所在目录）+ Git 分支
+- `Total` 会话累计 token 与 `Cost` 等效成本（来自 OpenCode 自己的逐请求计价）
+- 明细行：`in` / `out`（含思考）/ `cache r / w`
+- `Model` 与插件版本
+- **OpenCode Go 套餐额度**：`5h / 1w / 1m` 三行真实使用率
+
+**启用 / 卸载**：`tt setup` 安装（向导里检测到 OpenCode 时有一问），`tt unsetup` 一并移除；已有同名自定义插件文件、`tui.json` 里用户自己的 plugin 项都不会被覆盖/删除；`tui.json` 损坏时拒写并在 setup 时提示。重启 OpenCode 后生效。会话数据来自 TUI 自身状态、状态驱动刷新，运行时零额外依赖（`solid-js` / `@opentui/solid` 由 OpenCode 插件宿主提供）。
+
+### OpenCode Go 套餐额度（可选，推荐）
+
+面板底部的 `5h / 1w / 1m` 三行走 **OpenCode Go（opencode.ai 套餐）官方 `_server` 接口**，显示真实的用量百分比与重置倒计时，样式对齐 Claude Code 状态栏（`█████░ 31% (1h19m)`），每 60 秒刷新；请求失败显示 `?`，不影响面板其它部分。
+
+需要先在 `~/.config/token-tracker/opencode-go.json` 配两个字段：
+
+```json
+{ "workspace_id": "wrk_xxxx", "auth_cookie": "Fe26.2*..." }
+```
+
+取值方式：
+
+1. 登录 <https://opencode.ai> 打开你的工作区/用量页面，**`workspace_id`** 是浏览器地址栏 URL 里 `wrk_` 开头的那段（不是工作区名称）
+2. 浏览器按 F12 → Application → Cookies → 站点 `opencode.ai`，复制名为 **`auth`** 的 cookie 的完整值（`Fe26.2*` 开头）作为 **`auth_cookie`**
+
+> 安全提示：`auth_cookie` 是敏感凭据，仅落在本机 `~/.config/token-tracker/opencode-go.json`、不入仓库、不出现在日志；请不要把 cookie 或 workspace_id 粘贴进聊天/分享链接。删除该文件即可清除，插件会退回「未配置」提示。
 
 ## 报表速览
 
@@ -174,7 +203,7 @@ tt unsetup        # 卸载并恢复安装前的配置
 tt --version      # 查看版本（-v / -V 同义）
 ```
 
-> 多 agent 环境下想只看某一个 agent 的报表，加 `--claude` / `--codex` / `--kimi` 即可（互斥），对 `status` / `daily` / `weekly` / `monthly` / `sessions` 均生效。例如 `tt daily --kimi` 只显示 Kimi Code 的热力图。会话内的 `daily` / `weekly` 默认已自动跟随当前会话的 agent，显式 flag 会覆盖该行为。
+> 多 agent 环境下想只看某一个 agent 的报表，加 `--claude` / `--codex` / `--kimi` / `--opencode` 即可（互斥），对 `status` / `daily` / `weekly` / `monthly` / `sessions` 均生效。例如 `tt daily --opencode` 只显示 OpenCode 的热力图。会话内的 `daily` / `weekly` 默认已自动跟随当前会话的 agent，显式 flag 会覆盖该行为。
 
 > 💡 `tt daily` 是 GitHub 风格的 token 贡献热力图（深浅绿方格）。在 Claude Code 会话里输入 `!tt daily` 即可看到彩色热力图 —— 用户主动用 `!` 执行的命令，Claude Code 会渲染其 24-bit 真彩色输出。
 
@@ -212,6 +241,7 @@ tt monthly --theme nord  # 任意报表临时换主题渲染（不持久化、�
 3. **接管 Claude Code 状态栏** — Yes/No（仅检测到 Claude Code 时；已有自定义 statusLine 会先备份、选 No 完全不碰）
 4. **启用 Codex 伪 statusline** — Yes/No（仅检测到 Codex 时）
 5. **启用 Kimi Code 状态栏** — Yes/No（仅检测到 Kimi Code 时；已有自定义 `status_line.command` 默认不覆盖）
+6. **启用 OpenCode 状态栏** — Yes/No（仅检测到 OpenCode 时；已有同名自定义插件文件默认不覆盖）
 
 CI / 非 tty 环境（Docker / 脚本 / `curl|bash`）自动按**推荐默认**配置：语言跟随系统设置、主题 mocha、组件默认开启但**不替换已有自定义 statusLine**。装好后想改任何一项，再跑一次 `tt setup` 即可。
 
@@ -233,8 +263,9 @@ tt sessions --sort tokens --asc # 按 token 升序
 | Claude Code | `~/.claude/projects/*/` | JSONL（逐消息用量） |
 | Codex | `~/.codex/sessions/` | JSONL + SQLite |
 | Kimi Code | `~/.kimi-code/sessions/` | wire JSONL（每 turn 增量） |
+| OpenCode | `~/.local/share/opencode/opencode.db` | SQLite（`session` / `message` 表，WAL 并行只读安全） |
 
-路径跨平台：Windows 下 `~` 解析到 `%USERPROFILE%`。设了 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `KIMI_CODE_HOME` 环境变量（官方支持的自定义目录）时自动跟随。
+路径跨平台：Windows 下 `~` 解析到 `%USERPROFILE%`。设了 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `KIMI_CODE_HOME` / `XDG_DATA_HOME` 环境变量（官方支持的自定义目录）时自动跟随。
 
 Token Tracker 对 Agent 数据**只读**，不做任何修改。
 

@@ -6,9 +6,10 @@ import sys
 import tomllib
 from dataclasses import dataclass
 from importlib import resources
+from pathlib import Path
 
 from . import config, sidebar_install
-from .adapters.util import claude_home, codex_home, kimi_home
+from .adapters.util import claude_home, codex_home, kimi_home, opencode_config_home
 from .analyzer import cost as _cost_mod
 from .i18n import t
 from .ui import themes
@@ -17,19 +18,23 @@ from .ui.console import get_console
 _CLAUDE = claude_home()  # CLAUDE_CONFIG_DIR 覆盖 / ~/.claude
 _CODEX = codex_home()    # CODEX_HOME 覆盖 / ~/.codex
 _KIMI = kimi_home()      # KIMI_CODE_HOME 覆盖 / ~/.kimi-code
+_OPENCODE_CONFIG = opencode_config_home()  # OPENCODE_CONFIG_DIR 覆盖 / ~/.config/opencode
 
 
 @dataclass
 class SetupComponents:
-    """组件开关。CC statusLine 接管、Codex 伪 statusline（Stop hook）与 Kimi statusline
-    （tui.toml [status_line].command）均为可选组件，意图持久化到 config.json。"""
+    """组件开关。CC statusLine 接管、Codex 伪 statusline（Stop hook）、Kimi statusline
+    （tui.toml [status_line].command）与 OpenCode TUI 状态栏（sidebar slot 插件）均为
+    可选组件，意图持久化到 config.json。"""
     cc_statusline: bool = True
     codex_faux_statusline: bool = True
     kimi_statusline: bool = True
+    opencode_statusline: bool = True
 
     @classmethod
     def all_on(cls) -> "SetupComponents":
-        return cls(cc_statusline=True, codex_faux_statusline=True, kimi_statusline=True)
+        return cls(cc_statusline=True, codex_faux_statusline=True, kimi_statusline=True,
+                   opencode_statusline=True)
 
 # tt 自己的产物（statusline 脚本 + 缓存 + 备份）集中放 ~/.config/token-tracker（XDG，跟 theme/lang 同处）；
 # settings.json / config.toml 是「改 agent 自己的配置」、必须留 agent 目录。statusLine/hook 的 command
@@ -51,9 +56,17 @@ TERMINAL_MAP_FILE = config.TERMINAL_MAP_FILE              # Codex Stop hook 采�
 HOOK_VERSION = "2.1"  # 2.0: 采集 _terminal_map（sidebar 点击跳转）；2.1: 共享状态无条件随帧携带、防异常帧清表
 STATUSLINE_HOOK_VERSION = "1.9"  # 1.9: 缓存写入独立计价，快照缺失时使用相同的 token 拆分
 KIMI_STATUSLINE_HOOK_VERSION = "1.2"  # 1.2: Model 段加实际 effort（wire thinkingEffort），新增 Out t/s（output÷请求时长）
+OPENCODE_STATUSLINE_HOOK_VERSION = "1.3"  # OpenCode TUI 状态栏插件（templates/tt_statusline_tui.tsx）；1.3: 移除本地相对窗口条，仅保留会话统计 + Go 官方额度
 
 CC_BACKUP_PATH = os.path.join(_TT, "cc-backup.json")
 CODEX_BACKUP_LEGACY = os.path.join(_TT, "codex-backup.json")  # 老用户残留，unsetup 时还能恢复
+
+# OpenCode TUI 状态栏插件（sidebar slot 面板）：装到 opencode 全局插件目录，并在 tui.json 的
+# plugin 数组声明——plugins/*.tsx 不会被目录自动扫描（server 端 glob 只有 {ts,js}），
+# TUI 插件必须走 tui.json 的 `plugin` 数组（"opencode-ai/plugin/tui" 官方机制）。
+OPENCODE_PLUGINS_DIR = os.path.join(_OPENCODE_CONFIG, "plugins")
+OPENCODE_STATUSLINE_PLUGIN_PATH = os.path.join(OPENCODE_PLUGINS_DIR, "tt-statusline.tsx")
+OPENCODE_TUI_CONFIG = os.path.join(_OPENCODE_CONFIG, "tui.json")
 
 # 旧位置（agent 根目录）文件，迁移时删——老用户从 ~/.claude/~/.codex 迁到 ~/.config/token-tracker
 _LEGACY_PATHS = [
@@ -169,6 +182,130 @@ def kimi_statusline_active() -> bool:
     return sidebar_install.kimi_statusline_hook_present()
 
 
+# --- OpenCode TUI 状态栏（~/.config/opencode/plugins/tt-statusline.tsx） ---
+
+# 插件模板的版本号占位符（templates/tt_statusline_tui.tsx）。
+_OPENCODE_STATUSLINE_VERSION_PLACEHOLDER = "__OPENCODE_STATUSLINE_VERSION__"
+
+
+def _render_opencode_statusline_plugin() -> str:
+    """只注入版本号；渲染逻辑全在插件内（读 opencode TUI 自身状态），无需 Python 参与。"""
+    return (
+        resources.files("token_tracker.templates").joinpath("tt_statusline_tui.tsx")
+        .read_text(encoding="utf-8")
+        .replace(_OPENCODE_STATUSLINE_VERSION_PLACEHOLDER, OPENCODE_STATUSLINE_HOOK_VERSION)
+    )
+
+
+def _write_opencode_statusline_plugin() -> None:
+    os.makedirs(OPENCODE_PLUGINS_DIR, exist_ok=True)
+    with open(OPENCODE_STATUSLINE_PLUGIN_PATH, "w", encoding="utf-8") as f:
+        f.write(_render_opencode_statusline_plugin())
+
+
+def _installed_opencode_statusline_version() -> str | None:
+    try:
+        with open(OPENCODE_STATUSLINE_PLUGIN_PATH, encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("export const TT_VERSION ="):
+                    return line.split('"')[1]
+    except OSError:
+        pass
+    return None
+
+
+def _opencode_statusline_is_tt(path: str | None = None) -> bool:
+    """判断插件文件是不是 tt 的（有版本标记）。没有则视为用户自己的同名文件，install 与 unsetup 都不碰。"""
+    try:
+        with open(path or OPENCODE_STATUSLINE_PLUGIN_PATH, encoding="utf-8") as f:
+            return "export const TT_VERSION" in f.read()
+    except OSError:
+        return False
+
+
+def opencode_statusline_active() -> bool:
+    """双因素：用户意图 AND 实际装好（tt 的插件文件存在 + tui.json 的 plugin 数组已声明）。"""
+    if config.opencode_statusline_intent() is not True:
+        return False
+    if not os.path.exists(OPENCODE_STATUSLINE_PLUGIN_PATH):
+        return False
+    if not _opencode_statusline_is_tt():
+        return False
+    return _tui_config_has_tt()
+
+
+# --- tui.json（opencode TUI 配置）里托管「plugin 数组」的 tt 段 ---
+# plugins/*.tsx 不会被 TUI 自动扫描，必须显式声明进 tui.json 的 plugin 数组；
+# tt 只追加/移除自己的 file URL，用户其它 plugin 项原样保留，损坏 JSON 拒写（同 hooks.json 哲学）。
+
+
+def _opencode_plugin_uri() -> str:
+    """tt 插件文件的 file:// URL（tui.json plugin 数组里的声明形式）。"""
+    return Path(OPENCODE_STATUSLINE_PLUGIN_PATH).as_uri()
+
+
+def _read_tui_config() -> tuple[str, dict] | None:
+    try:
+        with open(OPENCODE_TUI_CONFIG, encoding="utf-8") as f:
+            content = f.read()
+        data = json.loads(content)
+        return content, data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _tui_config_has_tt() -> bool:
+    result = _read_tui_config()
+    if not result:
+        return False
+    plugins = result[1].get("plugin")
+    return isinstance(plugins, list) and _opencode_plugin_uri() in plugins
+
+
+def _add_tt_to_tui_config() -> bool:
+    """把 tt 插件的 file URL 追加进 tui.json 的 plugin 数组（幂等）。返回是否变更。
+    文件存在但损坏 → 抛 ValueError 拒写（同 hooks.json 哲学，绝不覆盖用户配置）。"""
+    data: dict = {}
+    if os.path.exists(OPENCODE_TUI_CONFIG):
+        result = _read_tui_config()
+        if result is None:
+            raise ValueError("tui.json is corrupt")
+        data = dict(result[1])
+    plugins = data.get("plugin")
+    if not isinstance(plugins, list):
+        plugins = []
+    uri = _opencode_plugin_uri()
+    if uri in plugins:
+        return False
+    plugins.append(uri)
+    data["plugin"] = plugins
+    os.makedirs(os.path.dirname(OPENCODE_TUI_CONFIG), exist_ok=True)
+    with open(OPENCODE_TUI_CONFIG, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    return True
+
+
+def _remove_tt_from_tui_config() -> bool:
+    """从 tui.json 的 plugin 数组摘掉 tt 的 file URL（用户其它 plugin 原样保留）。返回是否变更。
+    文件存在但损坏 → 抛 ValueError（unsetup 调用方捕获后跳过）。"""
+    if not os.path.exists(OPENCODE_TUI_CONFIG):
+        return False
+    result = _read_tui_config()
+    if result is None:
+        raise ValueError("tui.json is corrupt")
+    content, data = result
+    plugins = data.get("plugin")
+    if not isinstance(plugins, list):
+        return False
+    uri = _opencode_plugin_uri()
+    if uri not in plugins:
+        return False
+    data["plugin"] = [p for p in plugins if p != uri]
+    with open(OPENCODE_TUI_CONFIG, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    return True
+
+
 # 迁移 / 卸载时定位 tt 旧版追加的整段 [[hooks.Stop]]——
 # 同时认新（codex-statusline）/ 旧（tt-statusline）两种特征码。
 # command 值兼容三代形态：双引号 basic string（最老）、单引号 literal 裸拼接（0.4.x）、
@@ -258,7 +395,9 @@ def recommended_components() -> SetupComponents:
     绝不静默替换用户自定义；否则已记录意图非 None → 用意图；否则 → True（全新 / 已是 tt 的 → 接管）。
     Codex 端无从探测「用户自己的 statusline」：已记录意图非 None → 用意图，否则 → True。
     Kimi 端探测 tui.toml（do-no-harm，同 CC 哲学）：用户自定义 status_line.command → False，
-    绝不静默替换；否则已记录意图非 None → 用意图；否则 → True。"""
+    绝不静默替换；否则已记录意图非 None → 用意图；否则 → True。
+    OpenCode 端探测插件目录：已有非 tt 的 tt-statusline.tsx → False（do-no-harm），
+    否则已记录意图非 None → 用意图；否则 → True。"""
     cc = True
     if os.path.exists(CLAUDE_SETTINGS):
         try:
@@ -283,7 +422,13 @@ def recommended_components() -> SetupComponents:
     else:
         kimi_intent = config.kimi_statusline_intent()
         kimi = kimi_intent if kimi_intent is not None else True
-    return SetupComponents(cc_statusline=cc, codex_faux_statusline=codex, kimi_statusline=kimi)
+    if os.path.exists(OPENCODE_STATUSLINE_PLUGIN_PATH) and not _opencode_statusline_is_tt():
+        opencode = False  # 用户自己的同名插件文件 → 不覆盖
+    else:
+        opencode_intent = config.opencode_statusline_intent()
+        opencode = opencode_intent if opencode_intent is not None else True
+    return SetupComponents(cc_statusline=cc, codex_faux_statusline=codex, kimi_statusline=kimi,
+                           opencode_statusline=opencode)
 
 
 def is_setup() -> bool:
@@ -293,7 +438,8 @@ def is_setup() -> bool:
     has_cc = os.path.isdir(os.path.dirname(CLAUDE_SETTINGS))
     has_codex = os.path.isdir(CODEX_DIR)
     has_kimi = os.path.isdir(_KIMI)
-    if not has_cc and not has_codex and not has_kimi:
+    has_opencode = os.path.isdir(_OPENCODE_CONFIG)
+    if not has_cc and not has_codex and not has_kimi and not has_opencode:
         return False
     if has_cc:
         intent = config.cc_statusline_intent()
@@ -316,6 +462,12 @@ def is_setup() -> bool:
         if intent is None:  # 没跑过 wizard、没表达意图 → 视为未配（老用户升级后重走一次 setup）
             return False
         if intent and not kimi_statusline_active():
+            return False
+    if has_opencode:
+        intent = config.opencode_statusline_intent()
+        if intent is None:  # 没跑过 wizard、没表达意图 → 视为未配（老用户升级后重走一次 setup）
+            return False
+        if intent and not opencode_statusline_active():
             return False
     return True
 
@@ -481,6 +633,17 @@ def needs_update() -> bool:
             return True
         if sidebar_install.kimi_statusline_needs_sync(_kimi_statusline_command()):
             return True
+    # setup_version 6 起，OpenCode TUI 状态栏插件也属于 setup 产物。双因素：意图 True 才要求实装；
+    # 版本落后或 tui.json 声明缺失由 update_hook 收敛（不覆盖用户同名文件——那本来就不该是我们的产物）。
+    if (
+        os.path.isdir(_OPENCODE_CONFIG)
+        and config.setup_version() >= 6
+        and config.opencode_statusline_intent() is True
+    ):
+        if _installed_opencode_statusline_version() != OPENCODE_STATUSLINE_HOOK_VERSION:
+            return True
+        if not _tui_config_has_tt():
+            return True
     return _cc_command_needs_sync()  # settings.json 里 command 格式过时也算待更新（issue #13/#14）
 
 
@@ -508,6 +671,20 @@ def update_hook() -> None:
             sidebar_install.install_kimi_statusline(_kimi_statusline_command())
         except ValueError:
             pass
+    # OpenCode TUI 状态栏插件：已装但版本落后或 tui.json 声明漂移 → 重写/补齐（不主动给未装用户装——setup 负责装）
+    if (
+        os.path.isdir(_OPENCODE_CONFIG)
+        and config.setup_version() >= 6
+        and config.opencode_statusline_intent() is True
+    ):
+        installed = _installed_opencode_statusline_version()
+        if installed is not None and installed != OPENCODE_STATUSLINE_HOOK_VERSION:
+            _write_opencode_statusline_plugin()
+        if _tui_config_has_tt() is False:
+            try:
+                _add_tt_to_tui_config()
+            except ValueError:
+                pass
 
 
 # --- setup ---
@@ -523,8 +700,9 @@ def setup(auto: bool = False, components: SetupComponents | None = None, quiet: 
     has_cc = os.path.isdir(os.path.dirname(CLAUDE_SETTINGS))
     has_codex = os.path.isdir(CODEX_DIR)
     has_kimi = os.path.isdir(_KIMI)
+    has_opencode = os.path.isdir(_OPENCODE_CONFIG)
 
-    if not has_cc and not has_codex and not has_kimi:
+    if not has_cc and not has_codex and not has_kimi and not has_opencode:
         p(f"[red]{t('no_agent_install')}[/red]")
         return
 
@@ -553,6 +731,12 @@ def setup(auto: bool = False, components: SetupComponents | None = None, quiet: 
     else:
         if not auto:
             p(f"[dim]{t('kimi_not_found')}[/dim]")
+
+    if has_opencode:
+        _setup_opencode_statusline(components, quiet)
+    else:
+        if not auto:
+            p(f"[dim]{t('opencode_not_found')}[/dim]")
 
     # setup 真正落地了，写入当前引导版本——后续启动 cli 不再触发"老用户重新引导"。
     # early-return 分支（无 agent）不会到这，符合语义。
@@ -773,12 +957,49 @@ def _setup_kimi_sidebar(quiet: bool = False) -> None:
         p(f"[dim]{t('kimi_hook_hint')}[/dim]")
 
 
+def _setup_opencode_statusline(components: SetupComponents, quiet: bool = False) -> None:
+    """OpenCode 端装/卸 TUI 状态栏插件（~/.config/opencode/plugins/tt-statusline.tsx +
+    tui.json 的 plugin 数组声明）。意图先落盘（镜像 _setup_codex）。
+    opt-out 删 tt 插件文件 + 摘 tui.json 里的 tt 项；用户自己同名文件/plugin 绝不覆盖/删除。"""
+    p = (lambda *a, **k: None) if quiet else get_console().print
+    config.save_opencode_statusline(components.opencode_statusline)  # 写入意图（任何文件操作之前）
+
+    if not components.opencode_statusline:
+        _remove_opencode_statusline_plugin()
+        p(f"[dim]{t('opencode_statusline_skipped')}[/dim]")
+        return
+
+    if os.path.exists(OPENCODE_STATUSLINE_PLUGIN_PATH) and not _opencode_statusline_is_tt():
+        p(f"[yellow]{t('opencode_statusline_skipped_custom')}[/yellow]")
+        return
+
+    _write_opencode_statusline_plugin()
+    try:
+        _add_tt_to_tui_config()
+    except ValueError:
+        get_console().print(f"[red]{t('opencode_tui_corrupt', path=OPENCODE_TUI_CONFIG)}[/red]")
+        return
+    p(f"[green]✓[/green] {t('opencode_configured')}")
+    p(f"[dim]{t('restart_opencode')}[/dim]")
+
+
+def _remove_opencode_statusline_plugin() -> None:
+    """仅删 tt 自己的插件文件并从 tui.json 摘掉 tt 的 plugin 声明；同名用户文件/项不动。"""
+    if os.path.exists(OPENCODE_STATUSLINE_PLUGIN_PATH) and _opencode_statusline_is_tt():
+        os.remove(OPENCODE_STATUSLINE_PLUGIN_PATH)
+    try:
+        _remove_tt_from_tui_config()
+    except ValueError:
+        pass
+
+
 # --- unsetup ---
 
 def unsetup() -> None:
     has_cc = os.path.isdir(os.path.dirname(CLAUDE_SETTINGS))
     has_codex = os.path.isdir(CODEX_DIR)
     has_kimi = os.path.isdir(_KIMI)
+    has_opencode = os.path.isdir(_OPENCODE_CONFIG)
 
     if has_cc:
         _unsetup_claude()
@@ -788,8 +1009,22 @@ def unsetup() -> None:
     if has_kimi:
         _unsetup_kimi_statusline()
         _unsetup_kimi_sidebar()
-    if not has_cc and not has_codex and not has_kimi:
+    if has_opencode:
+        _unsetup_opencode_statusline()
+    if not has_cc and not has_codex and not has_kimi and not has_opencode:
         get_console().print(f"[dim]{t('no_agent_detected')}[/dim]")
+
+
+def _unsetup_opencode_statusline() -> None:
+    """卸载 OpenCode 状态栏：删 tt 的插件文件 + 摘 tui.json 里的 tt 声明；用户同名文件/项不动。"""
+    if os.path.exists(OPENCODE_STATUSLINE_PLUGIN_PATH) and _opencode_statusline_is_tt():
+        os.remove(OPENCODE_STATUSLINE_PLUGIN_PATH)
+        get_console().print(f"[green]✓[/green] {t('deleted_file', path=OPENCODE_STATUSLINE_PLUGIN_PATH)}")
+    try:
+        if _remove_tt_from_tui_config():
+            get_console().print(f"[green]✓[/green] {t('opencode_statusline_removed')}")
+    except ValueError:
+        pass
 
 
 def _unsetup_claude() -> None:
